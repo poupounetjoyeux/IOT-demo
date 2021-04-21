@@ -1,13 +1,19 @@
 #include <Arduino.h>
 #include <Ethernet.h>
-#include <PubSubClient.h>
 #include <EthernetClient.h>
+#include <PubSubClient.h>
+
+const int LEFT_CAPTOR = 0;
+const int RIGHT_CAPTOR = 1;
+const int LED_PIN = 8;
+
+String mainTopic = "BedCaptor";
+String ledPowerTopic = mainTopic + "/LedPower";
+String ledStateTopic = mainTopic + "/LedState";
 
 Ethernet WSA; // WSAStartup
 EthernetClient ethClient;
-IPAddress server(192, 168, 1, 25);
-
-#define LED_PIN 3
+PubSubClient mqttClient;
 
 String payloadToString(byte *payload, unsigned int length)
 {
@@ -16,58 +22,113 @@ String payloadToString(byte *payload, unsigned int length)
   return String(buffer);
 }
 
-void callback(char *topic, byte *payload, unsigned int length)
-{
 
-  String message = payloadToString(payload, length);
-  if(message.equals("Coucou"))
+
+void switchLed(bool on)
+{
+  if(on)
   {
-    Serial.println(message);
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_PIN, 1);
+  }
+  else
+  {
+    digitalWrite(LED_PIN, 0);
+  }
+  if(!mqttClient.publish(ledStateTopic.c_str(), String(on).c_str()))
+  {
+    Serial.println("Unable to publish led state value..");
   }
 }
 
-PubSubClient mqtt(server, 1883, callback, ethClient);
+void actionCallback(char * topicChar, byte* payloadByte, unsigned int length)
+{
+  Serial.println("New message received");
+  String topic = String(topicChar);
+  String payload = payloadToString(payloadByte, length);
 
-void setup () {
-  Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
+  Serial.print("Topic: ");
+  Serial.println(topic);
 
+  Serial.print("Payload: ");
+  Serial.println(payload);
 
-  pinMode(10, INPUT);
+  if(!topic.equals(ledPowerTopic))
+  {
+    return;
+  }
 
-  //Pre
-  digitalWrite(10, 80);
-  analogWrite(0, 80);
+  if(payload.equalsIgnoreCase("on"))
+  {
+    switchLed(true);
+  }
+  else if(payload.equalsIgnoreCase("off"))
+  {
+    switchLed(false);
+  }
 }
 
-void reconnect()
+void setupMqttClient() {
+  mqttClient.setClient(ethClient);
+  mqttClient.setServer("mqtt.flespi.io",1883);
+  mqttClient.setCallback(actionCallback);
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(LED_PIN, OUTPUT);
+  setupMqttClient();
+
+  analogWrite(LEFT_CAPTOR, 1.17 / 5.0 * 1024.0);
+}
+
+void subscribeActionTopic()
 {
-  while (!mqtt.connected())
+  if(!mqttClient.subscribe(ledPowerTopic.c_str()))
   {
-    Serial.println("[MQTT] Connecting to MQTT...");
-    if (mqtt.connect("MonObjectConnecte")) // Or mqtt.connect("MonObjectConnecte", "user", "pass") if you have protect the mqtt broker by credentials
+    Serial.println("Topic led action subscribe error");
+    return;
+  }
+  Serial.println("Topic led action subscribe success");
+}
+
+void connectMqtt() {
+  if(!mqttClient.connected())
+  {
+    Serial.println("Trying to connect to mqtt broker");
+    if(!mqttClient.connect("CapteurLit", "xdbT3mFXNfdzziF4LQXG9fyvl9DrRW4cX6TQgoCTrFgPLMJmquQpAeILcb2RWUTJ", ""))
     {
-      Serial.println("[MQTT] Connected");
-      mqtt.publish("EssaieIOT", "Hello world from WizIO");
-      mqtt.subscribe("EssaieIOT");
+      Serial.println("Mqtt broker connection failed");
+      return;
     }
-    else
-    {
-      Serial.print("[ERROR] MQTT Connect: ");
-      Serial.println(mqtt.state());
-      delay(60 * 1000);
-    }
+    Serial.println("Mqtt broker connection success");
+    subscribeActionTopic();
+  }
+}
+
+float readBedCaptor(int pin)
+{
+  float analogValue = analogRead(pin);
+  return analogValue * 5.0 / 1024.0 * 1000.0;
+}
+
+void publishBedCaptor(int pin)
+{
+  if(!mqttClient.connected())
+  {
+    Serial.println("Unable to publish bed captor value since mqtt broker insn't connect");
+    return;
+  }
+  float captorValue = readBedCaptor(pin);
+  String finalTopic = pin == LEFT_CAPTOR ? mainTopic + "/Left" : mainTopic + "/Right";
+  if(!mqttClient.publish(finalTopic.c_str(), String(captorValue).c_str()))
+  {
+    Serial.println("Unable to publish bed captor value..");
   }
 }
 
 void loop() {
-  if (!mqtt.connected())
-  {
-    reconnect();
-  }
-  mqtt.loop();
-
-  int test = digitalRead(10);
-  Serial.println(test);
+  connectMqtt();
+  publishBedCaptor(LEFT_CAPTOR);
+  publishBedCaptor(RIGHT_CAPTOR);
+  mqttClient.loop();
 }
